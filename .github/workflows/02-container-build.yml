@@ -1,0 +1,144 @@
+name: 02 - Build and Publish Container
+
+on:
+  workflow_run:
+    workflows:
+      - "01 - Java CI and Publish Package"
+    types:
+      - completed
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-container:
+    name: Download JAR, Build Image and Push to GHCR
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'dev'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout the exact source commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Set build metadata
+        shell: bash
+        run: |
+          VERSION="1.0.${{ github.event.workflow_run.run_number }}"
+          IMAGE_TAG="poc_${VERSION}"
+          OWNER_LC="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
+
+          echo "PACKAGE_VERSION=${VERSION}" >> "$GITHUB_ENV"
+          echo "IMAGE_TAG=${IMAGE_TAG}" >> "$GITHUB_ENV"
+          echo "OWNER_LC=${OWNER_LC}" >> "$GITHUB_ENV"
+          echo "IMAGE_NAME=ghcr.io/${OWNER_LC}/github-actions-java-demo" >> "$GITHUB_ENV"
+
+          echo "Package version : ${VERSION}"
+          echo "Container tag   : ${IMAGE_TAG}"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+          server-id: github
+          server-username: GITHUB_ACTOR
+          server-password: GITHUB_TOKEN
+
+      - name: Download exact JAR from GitHub Packages
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p docker-input
+
+          mvn --batch-mode dependency:get \
+            -Dartifact="com.demo:github-actions-demo:${PACKAGE_VERSION}:jar" \
+            -DremoteRepositories="github::default::https://maven.pkg.github.com/${GITHUB_REPOSITORY}"
+
+          cp "${HOME}/.m2/repository/com/demo/github-actions-demo/${PACKAGE_VERSION}/github-actions-demo-${PACKAGE_VERSION}.jar" \
+             docker-input/github-actions-demo.jar
+
+          echo "Downloaded package:"
+          ls -lh docker-input/github-actions-demo.jar
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build container image
+        shell: bash
+        run: |
+          echo "Building image:"
+          echo "${IMAGE_NAME}:${IMAGE_TAG}"
+
+          docker build \
+            --build-arg APP_VERSION="${PACKAGE_VERSION}" \
+            -t "${IMAGE_NAME}:${IMAGE_TAG}" \
+            .
+
+      - name: Smoke-test image before pushing
+        shell: bash
+        run: |
+          docker run -d \
+            --name pre-push-test \
+            -p 18080:8080 \
+            "${IMAGE_NAME}:${IMAGE_TAG}"
+
+          cleanup() {
+            echo "Container logs:"
+            docker logs pre-push-test || true
+
+            echo "Removing test container..."
+            docker rm -f pre-push-test || true
+          }
+
+          trap cleanup EXIT
+
+          for attempt in $(seq 1 30); do
+            if curl -fsS \
+              http://localhost:18080/actuator/health \
+              >/tmp/health.json; then
+
+              echo
+              echo "Application health response:"
+              cat /tmp/health.json
+              echo
+              echo "Container smoke test PASSED."
+              exit 0
+            fi
+
+            echo "Waiting for container readiness: ${attempt}/30"
+            sleep 5
+          done
+
+          echo "Container never became healthy."
+          exit 1
+
+      - name: Push container image to GHCR
+        shell: bash
+        run: |
+          echo "Pushing image:"
+          echo "${IMAGE_NAME}:${IMAGE_TAG}"
+
+          docker push "${IMAGE_NAME}:${IMAGE_TAG}"
+
+      - name: Container build summary
+        shell: bash
+        run: |
+          {
+            echo "## Container image published"
+            echo ""
+            echo "- JAR version: \`${PACKAGE_VERSION}\`"
+            echo "- Image tag: \`${IMAGE_TAG}\`"
+            echo "- Full image: \`${IMAGE_NAME}:${IMAGE_TAG}\`"
+            echo "- Registry: GitHub Container Registry"
+          } >> "$GITHUB_STEP_SUMMARY"
