@@ -24,7 +24,7 @@ public class DemoController {
     public String home() {
         return String.join(System.lineSeparator(),
                 "============================================================",
-                "           GITHUB ACTIONS CI/CD DEMO",
+                "           GITHUB ACTIONS CI/CD DEMO - Test",
                 "============================================================",
                 " Application       : Java Spring Boot Demo",
                 " Environment       : " + environment,
