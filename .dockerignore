@@ -1,0 +1,4 @@
+*
+!Dockerfile
+!docker-input/
+!docker-input/github-actions-demo.jar
