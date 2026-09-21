@@ -1,0 +1,135 @@
+name: 03 - CLI Demo Deployment
+
+on:
+  workflow_run:
+    workflows:
+      - "02 - Build and Publish Container"
+    types:
+      - completed
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  deploy-demo:
+    name: Pull Image, Run Container and Validate
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Resolve immutable image tag from container workflow
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          OWNER_LC="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          IMAGE_TAG="deploy-${{ github.event.workflow_run.run_number }}"
+
+          echo "OWNER_LC=${OWNER_LC}" >> "$GITHUB_ENV"
+          echo "IMAGE_NAME=ghcr.io/${OWNER_LC}/github-actions-java-demo" >> "$GITHUB_ENV"
+          echo "IMAGE_TAG=${IMAGE_TAG}" >> "$GITHUB_ENV"
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull immutable image
+        run: docker pull "${IMAGE_NAME}:${IMAGE_TAG}"
+
+      - name: Start demo container
+        shell: bash
+        run: |
+          docker run -d \
+            --name github-actions-demo \
+            -p 8080:8080 \
+            -e APP_ENVIRONMENT=DEV \
+            "${IMAGE_NAME}:${IMAGE_TAG}"
+
+          echo "Container started."
+          docker ps
+
+      - name: Wait for application readiness
+        shell: bash
+        run: |
+          echo "============================================================"
+          echo "           WAITING FOR APPLICATION READINESS"
+          echo "============================================================"
+
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://localhost:8080/actuator/health >/tmp/health.json; then
+              echo
+              echo "Application health response:"
+              cat /tmp/health.json
+              echo
+              echo
+              echo "============================================================"
+              echo "              APPLICATION IS HEALTHY"
+              echo "============================================================"
+              exit 0
+            fi
+
+            echo "Attempt ${attempt}/30 - application is not ready yet..."
+            sleep 5
+          done
+
+          echo "Application failed readiness checks."
+          docker logs github-actions-demo
+          exit 1
+
+      - name: CLI functional test
+        shell: bash
+        run: |
+          echo
+          curl --fail --silent --show-error http://localhost:8080/
+          echo
+
+          echo "API response:"
+          curl --fail --silent --show-error http://localhost:8080/api/hello
+          echo
+          echo
+
+          HTTP_CODE="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/api/hello)"
+
+          echo "============================================================"
+          echo "             GITHUB ACTIONS DEPLOYMENT RESULT"
+          echo "============================================================"
+          printf " Application   : %-38s\n" "github-actions-java-demo"
+          printf " Environment   : %-38s\n" "DEV"
+          printf " Image         : %-38s\n" "${IMAGE_TAG}"
+          printf " Container     : %-38s\n" "RUNNING"
+          printf " Health        : %-38s\n" "HEALTHY"
+          printf " HTTP          : %-38s\n" "${HTTP_CODE} OK"
+          printf " Port          : %-38s\n" "8080"
+          echo "============================================================"
+          echo "              DEPLOYMENT SUCCESSFUL"
+          echo "============================================================"
+
+      - name: Keep demo runtime active for 500 seconds
+        shell: bash
+        run: |
+          echo "The demo container will remain active for 500 seconds."
+          for remaining in 500 400 300 200 100; do
+            echo "Demo container is RUNNING - approximately ${remaining} seconds remaining."
+            sleep 100
+          done
+
+      - name: Final validation and cleanup
+        if: always()
+        shell: bash
+        run: |
+          echo "Final container state:"
+          docker ps -a || true
+
+          echo
+          echo "Application logs:"
+          docker logs github-actions-demo || true
+
+          echo
+          echo "Stopping demo container..."
+          docker rm -f github-actions-demo || true
+
+          echo "Demo environment cleaned up."
