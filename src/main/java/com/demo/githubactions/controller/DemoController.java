@@ -22,20 +22,20 @@ public class DemoController {
 
     @GetMapping(value = "/", produces = MediaType.TEXT_PLAIN_VALUE)
     public String home() {
-        return """
-                ============================================================
-                           GITHUB ACTIONS CI/CD DEMO
-                ============================================================
-                 Application       : Java Spring Boot Demo
-                 Environment       : %s
-                 Version           : %s
-                 Commit            : %s
-                 Status            : RUNNING
-                 HTTP Port         : 8080
-                ------------------------------------------------------------
-                 Message            : Deployment is healthy and reachable.
-                ============================================================
-                """.formatted(environment, version, commit);
+        return String.join(System.lineSeparator(),
+                "============================================================",
+                "           GITHUB ACTIONS CI/CD DEMO",
+                "============================================================",
+                " Application       : Java Spring Boot Demo",
+                " Environment       : " + environment,
+                " Version           : " + version,
+                " Commit            : " + commit,
+                " Status            : RUNNING",
+                " HTTP Port         : 8080",
+                "------------------------------------------------------------",
+                " Message           : Deployment is healthy and reachable.",
+                "============================================================",
+                "");
     }
 
     @GetMapping("/api/hello")
